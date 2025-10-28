@@ -66,6 +66,7 @@
                             <li>点击下方"开始捕获"按钮</li>
                             <li>在ops网站搜索框输入任意客户ID并搜索</li>
                             <li>工具会自动捕获请求参数</li>
+                            <li>或在开发者工具里复制 <code>Copy as cURL</code>，粘贴到下方手动解析</li>
                         </ol>
                     </div>
 
@@ -76,6 +77,20 @@
                     <div id="capture-status" style="display: none; margin-top: 10px; padding: 10px; background: #fff3cd; border-radius: 5px; text-align: center; font-size: 12px;">
                         <div style="margin-bottom: 5px;">⏳ 等待中...</div>
                         <div>请在 <strong>ops.planetmeican.com</strong> 搜索一次客户</div>
+                    </div>
+
+                    <div id="manual-curl-section" style="margin-top: 10px;">
+                        <button id="toggle-manual-curl" style="width: 100%; padding: 8px; background: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                            🛠️ 手动粘贴 cURL
+                        </button>
+                        <div id="manual-curl-container" style="display: none; margin-top: 10px;">
+                            <textarea id="manual-curl-input" placeholder="将 DevTools 中复制的 curl 命令粘贴到这里" style="width: 100%; height: 120px; padding: 8px; border: 1px solid #ced4da; border-radius: 5px; font-size: 12px; resize: vertical;"></textarea>
+                            <div style="display: flex; gap: 10px; margin-top: 8px;">
+                                <button id="parse-curl" style="flex: 1; padding: 8px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">解析并保存</button>
+                                <button id="cancel-curl" style="padding: 8px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">取消</button>
+                            </div>
+                            <div id="curl-parse-message" style="display: none; margin-top: 8px; font-size: 12px;"></div>
+                        </div>
                     </div>
 
                     <div id="captured-info" style="display: none; margin-top: 10px; padding: 10px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; font-size: 12px;">
@@ -323,39 +338,299 @@
     }
 
     // 拦截Fetch请求
+    function normalizeHeaders(headers) {
+        if (!headers) return {};
+
+        if (headers instanceof Headers) {
+            const result = {};
+            headers.forEach((value, key) => {
+                result[key] = value;
+            });
+            return result;
+        }
+
+        if (Array.isArray(headers)) {
+            return headers.reduce((acc, [key, value]) => {
+                acc[key] = value;
+                return acc;
+            }, {});
+        }
+
+        return { ...headers };
+    }
+
+    function parseRequestBody(bodyText) {
+        if (bodyText == null) return {};
+
+        let content = bodyText;
+        if (typeof content !== 'string') {
+            try {
+                if (content instanceof ArrayBuffer) {
+                    content = new TextDecoder().decode(content);
+                } else if (ArrayBuffer.isView(content)) {
+                    content = new TextDecoder().decode(content.buffer);
+                } else {
+                    content = String(content);
+                }
+            } catch (error) {
+                console.warn('请求体转换为字符串失败，保留原始值。', error);
+                return { raw: content };
+            }
+        }
+
+        const trimmed = content.trim();
+        if (!trimmed) return {};
+
+        try {
+            if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                return JSON.parse(trimmed);
+            }
+        } catch (error) {
+            console.warn('JSON 请求体解析失败，尝试其它格式。', error);
+        }
+
+        try {
+            if (trimmed.includes('=') && trimmed.includes('&')) {
+                const params = new URLSearchParams(trimmed);
+                const result = {};
+                params.forEach((value, key) => {
+                    if (Object.prototype.hasOwnProperty.call(result, key)) {
+                        if (!Array.isArray(result[key])) {
+                            result[key] = [result[key]];
+                        }
+                        result[key].push(value);
+                    } else {
+                        result[key] = value;
+                    }
+                });
+                return result;
+            }
+        } catch (error) {
+            console.warn('表单请求体解析失败，保留原始文本。', error);
+        }
+
+        console.warn('捕获请求体解析失败，使用原始文本。');
+        return { raw: trimmed };
+    }
+
+    function tokenizeCurlCommand(command) {
+        const tokens = [];
+        let current = '';
+        let quote = null;
+        let escape = false;
+
+        for (let i = 0; i < command.length; i++) {
+            const char = command[i];
+
+            if (escape) {
+                current += char;
+                escape = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                escape = true;
+                continue;
+            }
+
+            if (quote) {
+                if (char === quote) {
+                    tokens.push(current);
+                    current = '';
+                    quote = null;
+                } else {
+                    current += char;
+                }
+                continue;
+            }
+
+            if (char === '$' && (command[i + 1] === '"' || command[i + 1] === '\'')) {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                quote = command[i + 1];
+                i += 1;
+                continue;
+            }
+
+            if (char === '"' || char === '\'') {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                quote = char;
+                continue;
+            }
+
+            if (/\s/.test(char)) {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                continue;
+            }
+
+            current += char;
+        }
+
+        if (quote) {
+            throw new Error('cURL 命令中的引号不匹配，请确认复制完整。');
+        }
+
+        if (current) {
+            tokens.push(current);
+        }
+
+        return tokens;
+    }
+
+    function parseCurlCommand(curlCommand) {
+        if (!curlCommand || !curlCommand.trim()) {
+            throw new Error('请输入有效的 cURL 命令。');
+        }
+
+        const normalizedCommand = curlCommand.replace(/\\\s*\r?\n/g, ' ').trim();
+        const tokens = tokenizeCurlCommand(normalizedCommand);
+
+        if (tokens.length === 0 || tokens[0].toLowerCase() !== 'curl') {
+            throw new Error('命令需要以 "curl" 开头。');
+        }
+
+        let url = '';
+        let method = 'GET';
+        const headers = {};
+        let bodyText = '';
+
+        const dataFlags = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '-d']);
+
+        for (let i = 1; i < tokens.length; i++) {
+            const token = tokens[i];
+            const lower = token.toLowerCase();
+
+            if (lower === '-x' || lower === '--request') {
+                if (i + 1 < tokens.length) {
+                    method = tokens[++i].toUpperCase();
+                }
+            } else if (lower === '--url') {
+                if (i + 1 < tokens.length) {
+                    url = tokens[++i];
+                }
+            } else if (lower === '-h' || lower === '--header') {
+                if (i + 1 < tokens.length) {
+                    const headerLine = tokens[++i];
+                    const separatorIndex = headerLine.indexOf(':');
+                    if (separatorIndex !== -1) {
+                        const key = headerLine.slice(0, separatorIndex).trim();
+                        const value = headerLine.slice(separatorIndex + 1).trim();
+                        if (key) {
+                            headers[key] = value;
+                        }
+                    }
+                }
+            } else if (dataFlags.has(lower)) {
+                if (i + 1 < tokens.length) {
+                    const value = tokens[++i];
+                    bodyText = value;
+                    if (method === 'GET') {
+                        method = 'POST';
+                    }
+                }
+            } else if (!token.startsWith('-') && !url) {
+                url = token;
+            }
+        }
+
+        if (!url) {
+            throw new Error('未能在 cURL 命令中解析到 URL。');
+        }
+
+        if (!/^https?:/i.test(url)) {
+            throw new Error('解析到的 URL 无效，请确认命令正确。');
+        }
+
+        if (!url.includes('search-resources')) {
+            throw new Error('检测到的 URL 不是 search-resources 接口，请确认命令是否正确。');
+        }
+
+        let bodyForParsing = bodyText;
+        if (typeof bodyForParsing === 'string' && bodyForParsing.includes('\\n')) {
+            bodyForParsing = bodyForParsing.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+        }
+
+        return {
+            version: '2.0',
+            captured_at: new Date().toISOString(),
+            api: {
+                url,
+                method: method || 'POST',
+                headers: normalizeHeaders(headers),
+                body_template: parseRequestBody(bodyForParsing || '')
+            }
+        };
+    }
+
     function setupFetchInterception() {
         window.fetch = async function(...args) {
-            const [url, options] = args;
+            const [input, init] = args;
+            let requestUrl = '';
+            let requestMethod = 'GET';
+            let requestHeaders = {};
+            let requestBodyTemplate = {};
 
-            // 检测是否是目标API
-            if (captureMode && (typeof url === 'string' && url.includes('search-resources'))) {
-                console.log('🎯 捕获到API请求！', url);
+            if (input instanceof Request) {
+                const clonedRequest = input.clone();
+                requestUrl = clonedRequest.url;
+                requestMethod = clonedRequest.method || 'GET';
+                requestHeaders = normalizeHeaders(clonedRequest.headers);
 
-                // 保存配置
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodyText = await clonedRequest.text();
+                    requestBodyTemplate = parseRequestBody(bodyText);
+                }
+            } else {
+                requestUrl = typeof input === 'string' ? input : (input?.url || '');
+                requestMethod = init?.method || 'GET';
+                requestHeaders = normalizeHeaders(init?.headers);
+
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodySource = init?.body;
+                    if (typeof bodySource === 'string') {
+                        requestBodyTemplate = parseRequestBody(bodySource);
+                    } else if (bodySource instanceof Blob) {
+                        const text = await bodySource.text();
+                        requestBodyTemplate = parseRequestBody(text);
+                    }
+                }
+            }
+
+            if (captureMode && requestUrl.includes('search-resources')) {
+                console.log('🎯 捕获到API请求！', requestUrl);
+
                 const config = {
                     version: '2.0',
                     captured_at: new Date().toISOString(),
                     api: {
-                        url: url,
-                        method: options?.method || 'POST',
-                        headers: options?.headers || {},
-                        body_template: options?.body ? JSON.parse(options.body) : {}
+                        url: requestUrl,
+                        method: requestMethod || 'POST',
+                        headers: requestHeaders,
+                        body_template: requestBodyTemplate
                     }
                 };
 
                 saveConfig(config);
                 captureMode = false;
 
-                // 更新UI
-                document.getElementById('capture-status').style.display = 'none';
+                const captureStatus = document.getElementById('capture-status');
+                if (captureStatus) {
+                    captureStatus.style.display = 'none';
+                }
                 updateConfigStatus();
 
-                // 显示成功提示
                 alert('✅ API参数已成功捕获！\n\n现在可以正常使用CSV工具了。');
                 console.log('✅ 配置已保存:', config);
             }
 
-            // 调用原始fetch
             return originalFetch.apply(this, args);
         };
     }
@@ -439,8 +714,117 @@
             if (confirm('确定要重新捕获API配置吗？')) {
                 clearConfig();
                 updateConfigStatus();
+                const manualContainerEl = document.getElementById('manual-curl-container');
+                const manualInputEl = document.getElementById('manual-curl-input');
+                const manualMessageEl = document.getElementById('curl-parse-message');
+                const manualToggleEl = document.getElementById('toggle-manual-curl');
+                if (manualContainerEl) {
+                    manualContainerEl.style.display = 'none';
+                }
+                if (manualInputEl) {
+                    manualInputEl.value = '';
+                }
+                if (manualMessageEl) {
+                    manualMessageEl.style.display = 'none';
+                    manualMessageEl.textContent = '';
+                }
+                if (manualToggleEl) {
+                    manualToggleEl.textContent = '🛠️ 手动粘贴 cURL';
+                }
             }
         });
+
+        const manualToggleBtn = document.getElementById('toggle-manual-curl');
+        const manualContainer = document.getElementById('manual-curl-container');
+        const manualInput = document.getElementById('manual-curl-input');
+        const manualMessage = document.getElementById('curl-parse-message');
+        const manualParseBtn = document.getElementById('parse-curl');
+        const manualCancelBtn = document.getElementById('cancel-curl');
+
+        function clearManualCurlMessage() {
+            if (manualMessage) {
+                manualMessage.style.display = 'none';
+                manualMessage.textContent = '';
+            }
+        }
+
+        function showManualCurlMessage(text, color = '#28a745') {
+            if (!manualMessage) return;
+            manualMessage.textContent = text;
+            manualMessage.style.color = color;
+            manualMessage.style.display = 'block';
+        }
+
+        function setManualToggleLabel(isOpen) {
+            if (!manualToggleBtn) return;
+            manualToggleBtn.textContent = isOpen ? '⬆️ 收起 cURL 输入' : '🛠️ 手动粘贴 cURL';
+        }
+
+        setManualToggleLabel(manualContainer && manualContainer.style.display !== 'none');
+
+        if (manualToggleBtn && manualContainer) {
+            manualToggleBtn.addEventListener('click', function() {
+                const isHidden = manualContainer.style.display === 'none';
+                manualContainer.style.display = isHidden ? 'block' : 'none';
+                setManualToggleLabel(isHidden);
+                clearManualCurlMessage();
+                if (isHidden && manualInput) {
+                    manualInput.focus();
+                }
+            });
+        }
+
+        if (manualCancelBtn) {
+            manualCancelBtn.addEventListener('click', function() {
+                if (manualContainer) {
+                    manualContainer.style.display = 'none';
+                }
+                if (manualInput) {
+                    manualInput.value = '';
+                    manualInput.blur();
+                }
+                clearManualCurlMessage();
+                setManualToggleLabel(false);
+            });
+        }
+
+        if (manualParseBtn) {
+            manualParseBtn.addEventListener('click', function() {
+                if (!manualInput) return;
+
+                const command = manualInput.value.trim();
+                clearManualCurlMessage();
+
+                if (!command) {
+                    showManualCurlMessage('❌ 请先粘贴有效的 cURL 命令。', '#dc3545');
+                    return;
+                }
+
+                try {
+                    const config = parseCurlCommand(command);
+                    saveConfig(config);
+                    captureMode = false;
+
+                    const captureStatus = document.getElementById('capture-status');
+                    if (captureStatus) {
+                        captureStatus.style.display = 'none';
+                    }
+
+                    updateConfigStatus();
+                    manualInput.value = '';
+                    manualInput.blur();
+                    if (manualContainer) {
+                        manualContainer.style.display = 'block';
+                    }
+                    setManualToggleLabel(true);
+                    showManualCurlMessage('✅ 解析成功，配置已保存！', '#28a745');
+                    alert('✅ API参数已成功解析并保存！\n\n现在可以正常使用CSV工具了。');
+                } catch (error) {
+                    console.error('解析 cURL 命令失败:', error);
+                    showManualCurlMessage('❌ ' + (error.message || '解析失败，请检查命令格式。'), '#dc3545');
+                }
+            });
+        }
 
         // 文件上传处理
         document.getElementById('csv-file').addEventListener('change', function(e) {
