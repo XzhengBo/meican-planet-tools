@@ -323,39 +323,99 @@
     }
 
     // 拦截Fetch请求
+    function normalizeHeaders(headers) {
+        if (!headers) return {};
+
+        if (headers instanceof Headers) {
+            const result = {};
+            headers.forEach((value, key) => {
+                result[key] = value;
+            });
+            return result;
+        }
+
+        if (Array.isArray(headers)) {
+            return headers.reduce((acc, [key, value]) => {
+                acc[key] = value;
+                return acc;
+            }, {});
+        }
+
+        return { ...headers };
+    }
+
+    function parseRequestBody(bodyText) {
+        if (!bodyText) return {};
+
+        try {
+            return JSON.parse(bodyText);
+        } catch (error) {
+            console.warn('捕获请求体解析失败，使用原始文本。', error);
+            return { raw: bodyText };
+        }
+    }
+
     function setupFetchInterception() {
         window.fetch = async function(...args) {
-            const [url, options] = args;
+            const [input, init] = args;
+            let requestUrl = '';
+            let requestMethod = 'GET';
+            let requestHeaders = {};
+            let requestBodyTemplate = {};
 
-            // 检测是否是目标API
-            if (captureMode && (typeof url === 'string' && url.includes('search-resources'))) {
-                console.log('🎯 捕获到API请求！', url);
+            if (input instanceof Request) {
+                const clonedRequest = input.clone();
+                requestUrl = clonedRequest.url;
+                requestMethod = clonedRequest.method || 'GET';
+                requestHeaders = normalizeHeaders(clonedRequest.headers);
 
-                // 保存配置
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodyText = await clonedRequest.text();
+                    requestBodyTemplate = parseRequestBody(bodyText);
+                }
+            } else {
+                requestUrl = typeof input === 'string' ? input : (input?.url || '');
+                requestMethod = init?.method || 'GET';
+                requestHeaders = normalizeHeaders(init?.headers);
+
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodySource = init?.body;
+                    if (typeof bodySource === 'string') {
+                        requestBodyTemplate = parseRequestBody(bodySource);
+                    } else if (bodySource instanceof Blob) {
+                        const text = await bodySource.text();
+                        requestBodyTemplate = parseRequestBody(text);
+                    }
+                }
+            }
+
+            if (captureMode && requestUrl.includes('search-resources')) {
+                console.log('🎯 捕获到API请求！', requestUrl);
+
                 const config = {
                     version: '2.0',
                     captured_at: new Date().toISOString(),
                     api: {
-                        url: url,
-                        method: options?.method || 'POST',
-                        headers: options?.headers || {},
-                        body_template: options?.body ? JSON.parse(options.body) : {}
+                        url: requestUrl,
+                        method: requestMethod || 'POST',
+                        headers: requestHeaders,
+                        body_template: requestBodyTemplate
                     }
                 };
 
                 saveConfig(config);
                 captureMode = false;
 
-                // 更新UI
-                document.getElementById('capture-status').style.display = 'none';
+                const captureStatus = document.getElementById('capture-status');
+                if (captureStatus) {
+                    captureStatus.style.display = 'none';
+                }
                 updateConfigStatus();
 
-                // 显示成功提示
                 alert('✅ API参数已成功捕获！\n\n现在可以正常使用CSV工具了。');
                 console.log('✅ 配置已保存:', config);
             }
 
-            // 调用原始fetch
             return originalFetch.apply(this, args);
         };
     }
