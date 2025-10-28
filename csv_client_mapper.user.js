@@ -212,7 +212,7 @@
 
     // API调用函数
     async function searchClient(clientId, isLegacy = true) {
-        const url = 'https://ops.planetmeican.com/napi/v1/developer-team/search-resources';
+        const url = 'https://planet-sf-tools.planetmeican.com/napi/v1/developer-team/search-resources';
         const resourceType = isLegacy ? 'RESOURCE_TYPE_LEGACY_CLIENT' : 'RESOURCE_TYPE_CLIENT';
 
         const token = getAuthToken();
