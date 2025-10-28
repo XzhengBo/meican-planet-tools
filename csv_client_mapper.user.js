@@ -5,7 +5,11 @@
 // @description  上传CSV文件，查询客户信息并添加新列（支持请求拦截配置）
 // @author       Your Name
 // @match        *://*/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @connect      *
 // ==/UserScript==
 
 (function() {
@@ -13,10 +17,32 @@
 
     let csvData = null;
     let processedData = null;
-    const originalFetch = window.fetch.bind(window);
 
     const CONFIG_KEY = 'csv_tool_api_config';
     const CONFIG_EXPIRY_DAYS = 7;
+
+    function gmRequest(options) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                url: options.url,
+                method: options.method || 'GET',
+                headers: options.headers || {},
+                data: options.data,
+                responseType: options.responseType || 'json',
+                withCredentials: true,
+                timeout: options.timeout || 30000,
+                onload: response => {
+                    resolve(response);
+                },
+                onerror: error => {
+                    reject(new Error(error && error.error ? error.error : '网络请求失败'));
+                },
+                ontimeout: () => {
+                    reject(new Error('网络请求超时'));
+                }
+            });
+        });
+    }
 
     // 创建主界面
     function createMainInterface() {
@@ -236,11 +262,11 @@
 
     // 配置管理函数
     function saveConfig(config) {
-        localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+        GM_setValue(CONFIG_KEY, JSON.stringify(config));
     }
 
     function loadConfig() {
-        const configStr = localStorage.getItem(CONFIG_KEY);
+        const configStr = GM_getValue(CONFIG_KEY, null);
         if (!configStr) return null;
 
         try {
@@ -252,7 +278,7 @@
     }
 
     function clearConfig() {
-        localStorage.removeItem(CONFIG_KEY);
+        GM_deleteValue(CONFIG_KEY);
     }
 
     function isConfigValid(config) {
@@ -512,23 +538,31 @@
             keyword: clientId
         };
 
-        // 使用配置发送请求
-        const response = await originalFetch(config.api.url, {
+        const response = await gmRequest({
+            url: config.api.url,
             method: config.api.method,
             headers: config.api.headers,
-            credentials: 'include',
-            body: JSON.stringify(requestBody)
+            data: JSON.stringify(requestBody)
         });
 
-        if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
-                throw new Error(`认证失败 (${response.status})\n\n可能是Token已过期，请重新配置 API 参数。`);
+        const status = response.status;
+        if (status < 200 || status >= 300) {
+            if (status === 401 || status === 403) {
+                throw new Error(`认证失败 (${status})\n\n可能是Token已过期，请重新配置 API 参数。`);
             }
-            throw new Error(`API调用失败: ${response.status}`);
+            throw new Error(`API调用失败: ${status}`);
         }
 
-        const result = await response.json();
-        if (result.resultCode === 'RESULT_CODE_OK' && result.data.resources.length > 0) {
+        let result = response.response;
+        if (!result) {
+            const responseText = response.responseText || '';
+            try {
+                result = responseText ? JSON.parse(responseText) : {};
+            } catch (error) {
+                throw new Error('无法解析API返回结果');
+            }
+        }
+        if (result && result.resultCode === 'RESULT_CODE_OK' && result.data && Array.isArray(result.data.resources) && result.data.resources.length > 0) {
             return result.data.resources[0].name;
         }
         return null;
