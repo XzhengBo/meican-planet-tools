@@ -1,32 +1,35 @@
 // ==UserScript==
 // @name         CSV客户信息查询工具
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  上传CSV文件，查询3.0和4.0客户信息并更新文件
-// @author       You
-// @match        https://*/*
+// @version      1.2
+// @description  上传CSV文件，查询客户信息并添加新列
+// @author       Your Name
+// @match        *://*/*
 // @grant        none
 // ==/UserScript==
 
 (function() {
     'use strict';
 
+    let csvData = null;
+    let processedData = null;
+
     // 创建主界面
     function createMainInterface() {
-        // 创建浮动面板
         const panel = document.createElement('div');
-        panel.id = 'csv-client-mapper-panel';
+        panel.id = 'csv-tool-panel';
         panel.style.cssText = `
             position: fixed;
-            top: 20px;
+            top: 50px;
             right: 20px;
-            width: 400px;
+            width: 450px;
+            max-height: 80vh;
+            overflow-y: auto;
             background: white;
-            border: 2px solid #007bff;
-            border-radius: 10px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             z-index: 10000;
-            font-family: Arial, sans-serif;
             padding: 20px;
             display: none;
         `;
@@ -52,72 +55,67 @@
                 <h4>步骤2: 配置列名</h4>
                 <div style="margin-bottom: 10px;">
                     <label>3.0客户ID列名:</label>
-                    <select id="legacy-client-column" style="width: 100%; margin-top: 5px;">
+                    <select id="legacy-client-column" style="width: 100%; padding: 5px; margin-top: 5px;">
                         <option value="">请选择列名</option>
                     </select>
                 </div>
                 <div style="margin-bottom: 10px;">
                     <label>4.0客户ID列名:</label>
-                    <select id="new-client-column" style="width: 100%; margin-top: 5px;">
+                    <select id="new-client-column" style="width: 100%; padding: 5px; margin-top: 5px;">
                         <option value="">请选择列名</option>
                     </select>
                 </div>
-                <button id="start-processing" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; width: 100%;">开始处理</button>
+                <button id="start-processing" style="width: 100%; padding: 10px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px;">
+                    开始处理
+                </button>
             </div>
             
             <div id="step3" class="step" style="display: none;">
                 <h4>步骤3: 处理进度</h4>
-                <div id="progress-info" style="margin-bottom: 10px;"></div>
-                <div style="background: #f0f0f0; border-radius: 5px; height: 20px; margin-bottom: 10px;">
-                    <div id="progress-bar" style="background: #007bff; height: 100%; width: 0%; border-radius: 5px; transition: width 0.3s;"></div>
+                <div style="background: #f0f0f0; border-radius: 5px; height: 20px; margin-bottom: 10px; overflow: hidden;">
+                    <div id="progress-bar" style="background: #007bff; height: 100%; width: 0%; transition: width 0.3s;"></div>
                 </div>
+                <div id="progress-info" style="text-align: center; font-size: 14px; margin-bottom: 10px;"></div>
+                
                 <div id="download-section" style="display: none;">
-                    <button id="download-csv" style="background: #28a745; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; width: 100%;">下载更新后的CSV文件</button>
+                    <button id="download-csv" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 10px;">
+                        下载处理后的CSV
+                    </button>
                 </div>
             </div>
         `;
 
         document.body.appendChild(panel);
-
-        // 添加关闭按钮事件
-        document.getElementById('close-panel').addEventListener('click', () => {
-            panel.style.display = 'none';
-        });
-
         return panel;
     }
 
     // 创建触发按钮
     function createTriggerButton() {
         const button = document.createElement('button');
-        button.id = 'csv-mapper-trigger';
         button.innerHTML = '📊 CSV工具';
         button.style.cssText = `
             position: fixed;
-            top: 20px;
+            top: 10px;
             right: 20px;
+            padding: 10px 20px;
             background: #007bff;
             color: white;
             border: none;
-            padding: 10px 15px;
             border-radius: 5px;
             cursor: pointer;
             z-index: 10001;
             font-size: 14px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
         `;
 
-        button.addEventListener('click', () => {
-            const panel = document.getElementById('csv-client-mapper-panel');
-            if (panel) {
-                panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-            }
+        button.addEventListener('click', function() {
+            const panel = document.getElementById('csv-tool-panel');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
         });
 
         document.body.appendChild(button);
     }
 
-    // CSV解析函数，支持自动检测分隔符
+    // CSV解析函数，正确处理方括号和引号内的分隔符
     function parseCSV(csvText) {
         const lines = csvText.split('\n').filter(line => line.trim());
         if (lines.length === 0) return { headers: [], data: [] };
@@ -126,12 +124,45 @@
         const firstLine = lines[0];
         const delimiter = firstLine.includes(';') ? ';' : ',';
 
-        const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
+        // 解析单行，正确处理引号和方括号内的分隔符
+        function parseLine(line, delimiter) {
+            const result = [];
+            let current = '';
+            let inQuotes = false;
+            let inBrackets = 0;
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i];
+
+                if (char === '"' && (i === 0 || line[i - 1] !== '\\')) {
+                    inQuotes = !inQuotes;
+                    // 不添加引号本身到结果中
+                } else if (char === '[' && !inQuotes) {
+                    inBrackets++;
+                    current += char;
+                } else if (char === ']' && !inQuotes) {
+                    inBrackets--;
+                    current += char;
+                } else if (char === delimiter && !inQuotes && inBrackets === 0) {
+                    result.push(current.trim());
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+
+            // 添加最后一个字段
+            result.push(current.trim());
+
+            return result;
+        }
+
+        const headers = parseLine(firstLine, delimiter);
         const data = [];
 
         for (let i = 1; i < lines.length; i++) {
             if (lines[i].trim()) {
-                const values = lines[i].split(delimiter).map(v => v.trim().replace(/^"|"$/g, ''));
+                const values = parseLine(lines[i], delimiter);
                 const row = {};
                 headers.forEach((header, index) => {
                     row[header] = values[index] || '';
@@ -147,7 +178,16 @@
     function generateCSV(headers, data, delimiter = ';') {
         const csvContent = [
             headers.join(delimiter),
-            ...data.map(row => headers.map(header => `${row[header] || ''}`).join(delimiter))
+            ...data.map(row => 
+                headers.map(header => {
+                    const value = row[header] || '';
+                    // 如果值包含分隔符、换行符或引号，用引号包裹
+                    if (value.includes(delimiter) || value.includes('\n') || value.includes('"')) {
+                        return '"' + value.replace(/"/g, '""') + '"';
+                    }
+                    return value;
+                }).join(delimiter)
+            )
         ].join('\n');
         return csvContent;
     }
@@ -213,24 +253,29 @@
         const panel = createMainInterface();
         createTriggerButton();
 
-        let csvData = null;
-        let processedData = null;
+        // 关闭按钮
+        document.getElementById('close-panel').addEventListener('click', function() {
+            panel.style.display = 'none';
+        });
 
         // 文件上传处理
         document.getElementById('csv-file').addEventListener('change', function(e) {
             const file = e.target.files[0];
-            if (file && file.type === 'text/csv') {
+            if (file) {
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     try {
-                        csvData = parseCSV(e.target.result);
+                        const csvText = e.target.result;
+                        csvData = parseCSV(csvText);
+                        
                         document.getElementById('file-info').innerHTML = `
-                            <strong>文件已加载:</strong> ${file.name}<br>
-                            <strong>行数:</strong> ${csvData.data.length}<br>
-                            <strong>列数:</strong> ${csvData.headers.length}
+                            文件已加载: ${file.name}<br>
+                            行数: ${csvData.data.length}<br>
+                            列数: ${csvData.headers.length}<br>
+                            列名: ${csvData.headers.join(', ')}
                         `;
                         
-                        // 填充列名选择器
+                        // 填充列选择下拉框
                         const legacySelect = document.getElementById('legacy-client-column');
                         const newSelect = document.getElementById('new-client-column');
                         
@@ -238,23 +283,28 @@
                         newSelect.innerHTML = '<option value="">请选择列名</option>';
                         
                         csvData.headers.forEach(header => {
-                            const option1 = document.createElement('option');
-                            option1.value = header;
-                            option1.textContent = header;
-                            legacySelect.appendChild(option1);
-                            
-                            const option2 = document.createElement('option');
-                            option2.value = header;
-                            option2.textContent = header;
-                            newSelect.appendChild(option2);
+                            legacySelect.innerHTML += `<option value="${header}">${header}</option>`;
+                            newSelect.innerHTML += `<option value="${header}">${header}</option>`;
+                        });
+                        
+                        // 智能预选列
+                        csvData.headers.forEach(header => {
+                            const lowerHeader = header.toLowerCase();
+                            if (lowerHeader.includes('legacy') && lowerHeader.includes('client')) {
+                                legacySelect.value = header;
+                            }
+                            if (lowerHeader.includes('new') && lowerHeader.includes('client')) {
+                                newSelect.value = header;
+                            }
                         });
                         
                         document.getElementById('step2').style.display = 'block';
                     } catch (error) {
-                        alert('CSV文件解析失败: ' + error.message);
+                        alert('CSV解析失败: ' + error.message);
+                        console.error(error);
                     }
                 };
-                reader.readAsText(file, 'UTF-8');
+                reader.readAsText(file);
             } else {
                 alert('请选择有效的CSV文件');
             }
@@ -335,12 +385,16 @@
         // 下载CSV
         document.getElementById('download-csv').addEventListener('click', function() {
             if (processedData) {
-                const csvContent = generateCSV(processedData.headers, processedData.data, processedData.delimiter);
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const csvContent = generateCSV(processedData.headers, processedData.data, csvData.delimiter);
+                const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = 'updated_clients.csv';
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', 'processed_' + new Date().getTime() + '.csv');
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
                 link.click();
+                document.body.removeChild(link);
             }
         });
     }
