@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CSV客户信息查询工具
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  上传CSV文件，查询客户信息并添加新列
+// @version      2.0
+// @description  上传CSV文件，查询客户信息并添加新列（支持请求拦截配置）
 // @author       Your Name
 // @match        *://*/*
 // @grant        none
@@ -13,6 +13,11 @@
 
     let csvData = null;
     let processedData = null;
+    let captureMode = false;
+    let originalFetch = window.fetch;
+
+    const CONFIG_KEY = 'csv_tool_api_config';
+    const CONFIG_EXPIRY_DAYS = 7;
 
     // 创建主界面
     function createMainInterface() {
@@ -40,9 +45,48 @@
                 <button id="close-panel" style="background: none; border: none; font-size: 20px; cursor: pointer;">&times;</button>
             </div>
 
-            <div id="auth-warning" style="background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 12px;">
-                <strong>⚠️ 使用前提示：</strong><br>
-                请确保在使用本工具前已登录 <a href="https://ops.planetmeican.com" target="_blank">ops.planetmeican.com</a>
+            <div id="config-panel" style="background: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h4 style="margin: 0; font-size: 14px;">⚙️ API配置</h4>
+                    <button id="toggle-config" style="background: none; border: none; cursor: pointer; font-size: 18px;">▼</button>
+                </div>
+
+                <div id="config-content">
+                    <div id="config-status" style="padding: 10px; border-radius: 5px; margin-bottom: 10px; font-size: 13px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span id="status-icon">❌</span>
+                            <span id="status-text">未配置</span>
+                        </div>
+                    </div>
+
+                    <div id="config-instructions" style="font-size: 12px; color: #666; margin-bottom: 10px;">
+                        <p style="margin: 5px 0;"><strong>首次使用需要配置：</strong></p>
+                        <ol style="margin: 5px 0; padding-left: 20px;">
+                            <li>访问 <a href="https://ops.planetmeican.com" target="_blank">ops.planetmeican.com</a> 并登录</li>
+                            <li>点击下方"开始捕获"按钮</li>
+                            <li>在ops网站搜索框输入任意客户ID并搜索</li>
+                            <li>工具会自动捕获请求参数</li>
+                        </ol>
+                    </div>
+
+                    <button id="start-capture" style="width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                        🎯 开始捕获请求
+                    </button>
+
+                    <div id="capture-status" style="display: none; margin-top: 10px; padding: 10px; background: #fff3cd; border-radius: 5px; text-align: center; font-size: 12px;">
+                        <div style="margin-bottom: 5px;">⏳ 等待中...</div>
+                        <div>请在 <strong>ops.planetmeican.com</strong> 搜索一次客户</div>
+                    </div>
+
+                    <div id="captured-info" style="display: none; margin-top: 10px; padding: 10px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; font-size: 12px;">
+                        <div style="margin-bottom: 5px;"><strong>✅ 已配置</strong></div>
+                        <div style="color: #666;">Token: <code id="token-preview" style="font-size: 11px;">***</code></div>
+                        <div style="color: #666;">时间: <span id="capture-time">-</span></div>
+                        <button id="recapture" style="margin-top: 8px; padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 11px;">
+                            🔄 重新捕获
+                        </button>
+                    </div>
+                </div>
             </div>
 
             <div id="step1" class="step">
@@ -192,52 +236,160 @@
         return csvContent;
     }
 
-    // 获取认证token
-    function getAuthToken() {
-        const cookies = document.cookie.split(';');
-        for (let cookie of cookies) {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'token' || name === 'auth_token' || name === 'authorization') {
-                return value;
-            }
-        }
-
-        const localToken = localStorage.getItem('token') || localStorage.getItem('auth_token');
-        if (localToken) {
-            return localToken;
-        }
-
-        return null;
+    // 配置管理函数
+    function saveConfig(config) {
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     }
 
-    // API调用函数
-    async function searchClient(clientId, isLegacy = true) {
-        const url = 'https://planet-sf-tools.planetmeican.com/napi/v1/developer-team/search-resources';
-        const resourceType = isLegacy ? 'RESOURCE_TYPE_LEGACY_CLIENT' : 'RESOURCE_TYPE_CLIENT';
+    function loadConfig() {
+        const configStr = localStorage.getItem(CONFIG_KEY);
+        if (!configStr) return null;
 
-        const token = getAuthToken();
-        if (!token) {
-            throw new Error('未找到认证token，请确保已登录 ops.planetmeican.com');
+        try {
+            return JSON.parse(configStr);
+        } catch (e) {
+            console.error('配置解析失败:', e);
+            return null;
+        }
+    }
+
+    function clearConfig() {
+        localStorage.removeItem(CONFIG_KEY);
+    }
+
+    function isConfigValid(config) {
+        if (!config) return false;
+        if (!config.api || !config.api.url || !config.api.headers) return false;
+
+        const capturedTime = new Date(config.captured_at);
+        const now = new Date();
+        const daysDiff = (now - capturedTime) / (1000 * 60 * 60 * 24);
+
+        return daysDiff < CONFIG_EXPIRY_DAYS;
+    }
+
+    function maskToken(token) {
+        if (!token || token.length < 20) return '***';
+        return token.substring(0, 8) + '...' + token.substring(token.length - 8);
+    }
+
+    // 更新配置状态显示
+    function updateConfigStatus() {
+        const config = loadConfig();
+        const statusIcon = document.getElementById('status-icon');
+        const statusText = document.getElementById('status-text');
+        const instructions = document.getElementById('config-instructions');
+        const startCaptureBtn = document.getElementById('start-capture');
+        const capturedInfo = document.getElementById('captured-info');
+
+        if (config && isConfigValid(config)) {
+            statusIcon.textContent = '✅';
+            statusText.textContent = '已配置';
+            statusText.style.color = '#28a745';
+            instructions.style.display = 'none';
+            startCaptureBtn.style.display = 'none';
+            capturedInfo.style.display = 'block';
+
+            const token = config.api.headers.authorization || config.api.headers.Authorization || '';
+            document.getElementById('token-preview').textContent = maskToken(token.replace(/^bearer\s+/i, ''));
+            document.getElementById('capture-time').textContent = new Date(config.captured_at).toLocaleString('zh-CN');
+        } else if (config && !isConfigValid(config)) {
+            statusIcon.textContent = '⚠️';
+            statusText.textContent = '配置已过期';
+            statusText.style.color = '#ffc107';
+            instructions.style.display = 'block';
+            startCaptureBtn.style.display = 'block';
+            capturedInfo.style.display = 'none';
+        } else {
+            statusIcon.textContent = '❌';
+            statusText.textContent = '未配置';
+            statusText.style.color = '#dc3545';
+            instructions.style.display = 'block';
+            startCaptureBtn.style.display = 'block';
+            capturedInfo.style.display = 'none';
+        }
+    }
+
+    // 开始捕获模式
+    function startCaptureMode() {
+        captureMode = true;
+        const captureBtn = document.getElementById('start-capture');
+        const captureStatus = document.getElementById('capture-status');
+
+        captureBtn.style.display = 'none';
+        captureStatus.style.display = 'block';
+
+        console.log('🎯 捕获模式已启动，等待search-resources请求...');
+    }
+
+    // 拦截Fetch请求
+    function setupFetchInterception() {
+        window.fetch = async function(...args) {
+            const [url, options] = args;
+
+            // 检测是否是目标API
+            if (captureMode && (typeof url === 'string' && url.includes('search-resources'))) {
+                console.log('🎯 捕获到API请求！', url);
+
+                // 保存配置
+                const config = {
+                    version: '2.0',
+                    captured_at: new Date().toISOString(),
+                    api: {
+                        url: url,
+                        method: options?.method || 'POST',
+                        headers: options?.headers || {},
+                        body_template: options?.body ? JSON.parse(options.body) : {}
+                    }
+                };
+
+                saveConfig(config);
+                captureMode = false;
+
+                // 更新UI
+                document.getElementById('capture-status').style.display = 'none';
+                updateConfigStatus();
+
+                // 显示成功提示
+                alert('✅ API参数已成功捕获！\n\n现在可以正常使用CSV工具了。');
+                console.log('✅ 配置已保存:', config);
+            }
+
+            // 调用原始fetch
+            return originalFetch.apply(this, args);
+        };
+    }
+
+    // API调用函数（使用捕获的配置）
+    async function searchClient(clientId, isLegacy = true) {
+        const config = loadConfig();
+
+        if (!config || !isConfigValid(config)) {
+            throw new Error('❌ API配置未找到或已过期！\n\n请先点击"开始捕获请求"按钮进行配置。');
         }
 
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'accept': 'application/json, text/plain, */*',
-                'authorization': `bearer ${token}`,
-                'content-type': 'application/json;charset=UTF-8',
-                'x-platform': 'Planet'
-            },
+        const resourceType = isLegacy ? 'RESOURCE_TYPE_LEGACY_CLIENT' : 'RESOURCE_TYPE_CLIENT';
+
+        // 构建请求体
+        const bodyTemplate = config.api.body_template;
+        const requestBody = {
+            ...bodyTemplate,
+            resourceType: resourceType,
+            keyword: clientId
+        };
+
+        // 使用捕获的配置发送请求
+        const response = await originalFetch(config.api.url, {
+            method: config.api.method,
+            headers: config.api.headers,
             credentials: 'include',
-            body: JSON.stringify({
-                resourceType: resourceType,
-                pageToken: '',
-                pageSize: 20,
-                keyword: clientId
-            })
+            body: JSON.stringify(requestBody)
         });
 
         if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                throw new Error(`认证失败 (${response.status})\n\n可能是Token已过期，请重新捕获配置。`);
+            }
             throw new Error(`API调用失败: ${response.status}`);
         }
 
@@ -250,12 +402,44 @@
 
     // 初始化
     function init() {
+        // 设置Fetch拦截
+        setupFetchInterception();
+
         const panel = createMainInterface();
         createTriggerButton();
+
+        // 更新配置状态
+        updateConfigStatus();
 
         // 关闭按钮
         document.getElementById('close-panel').addEventListener('click', function() {
             panel.style.display = 'none';
+        });
+
+        // 配置面板折叠
+        document.getElementById('toggle-config').addEventListener('click', function() {
+            const content = document.getElementById('config-content');
+            const toggleBtn = document.getElementById('toggle-config');
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                toggleBtn.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                toggleBtn.textContent = '▶';
+            }
+        });
+
+        // 开始捕获按钮
+        document.getElementById('start-capture').addEventListener('click', function() {
+            startCaptureMode();
+        });
+
+        // 重新捕获按钮
+        document.getElementById('recapture').addEventListener('click', function() {
+            if (confirm('确定要重新捕获API配置吗？')) {
+                clearConfig();
+                updateConfigStatus();
+            }
         });
 
         // 文件上传处理
@@ -320,10 +504,10 @@
                 return;
             }
 
-            // 检查认证状态
-            const token = getAuthToken();
-            if (!token) {
-                alert('未找到认证token！\n\n请先打开 https://ops.planetmeican.com 并登录，然后再使用本工具。');
+            // 检查配置状态
+            const config = loadConfig();
+            if (!config || !isConfigValid(config)) {
+                alert('❌ API配置未找到或已过期！\n\n请先点击"API配置"区域的"开始捕获请求"按钮进行配置。');
                 return;
             }
 
