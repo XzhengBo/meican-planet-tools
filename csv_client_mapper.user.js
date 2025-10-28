@@ -112,15 +112,21 @@
         document.body.appendChild(button);
     }
 
-    // CSV解析函数
+    // CSV解析函数，支持自动检测分隔符
     function parseCSV(csvText) {
-        const lines = csvText.split('\n');
-        const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+        const lines = csvText.split('\n').filter(line => line.trim());
+        if (lines.length === 0) return { headers: [], data: [] };
+
+        // 自动检测分隔符（优先检测分号，然后逗号）
+        const firstLine = lines[0];
+        const delimiter = firstLine.includes(';') ? ';' : ',';
+
+        const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
         const data = [];
-        
+
         for (let i = 1; i < lines.length; i++) {
             if (lines[i].trim()) {
-                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+                const values = lines[i].split(delimiter).map(v => v.trim().replace(/^"|"$/g, ''));
                 const row = {};
                 headers.forEach((header, index) => {
                     row[header] = values[index] || '';
@@ -128,15 +134,15 @@
                 data.push(row);
             }
         }
-        
-        return { headers, data };
+
+        return { headers, data, delimiter };
     }
 
     // 生成CSV内容
-    function generateCSV(headers, data) {
+    function generateCSV(headers, data, delimiter = ';') {
         const csvContent = [
-            headers.join(','),
-            ...data.map(row => headers.map(header => `"${row[header] || ''}"`).join(','))
+            headers.join(delimiter),
+            ...data.map(row => headers.map(header => `${row[header] || ''}`).join(delimiter))
         ].join('\n');
         return csvContent;
     }
@@ -297,7 +303,7 @@
         // 下载CSV
         document.getElementById('download-csv').addEventListener('click', function() {
             if (processedData) {
-                const csvContent = generateCSV(processedData.headers, processedData.data);
+                const csvContent = generateCSV(processedData.headers, processedData.data, processedData.delimiter);
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(blob);
