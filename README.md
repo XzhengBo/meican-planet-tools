@@ -24,7 +24,7 @@
 
 **重要：** 使用本工具前，请先在浏览器中打开并登录：
 ```
-https://planet-sf-tools.planetmeican.com
+https://ops.planetmeican.com
 ```
 
 ### 操作步骤
@@ -107,7 +107,7 @@ id;name;patterns;new_client_ids;legacy_client_ids
 ### Q: 提示"未找到认证token"怎么办？
 
 A: 请确保：
-1. 已在浏览器中打开 `https://planet-sf-tools.planetmeican.com`
+1. 已在浏览器中打开 `https://ops.planetmeican.com`
 2. 已成功登录
 3. 登录后再使用本工具
 
@@ -126,7 +126,7 @@ A: 可能原因：
 
 ### Q: 可以在哪些网站使用？
 
-A: 本工具可以在任何网站使用（`@match *://*/*`），但需要先登录 planet-sf-tools.planetmeican.com 获取认证信息。
+A: 本工具可以在任何网站使用（`@match *://*/*`），但需要先登录 ops.planetmeican.com 获取认证信息。
 
 ## 更新日志
 

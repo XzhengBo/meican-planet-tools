@@ -44,7 +44,7 @@ Data rows: 46 ✅
 现在可以正确识别所有5列！
 
 ## 使用建议
-1. 先登录 https://planet-sf-tools.planetmeican.com
+1. 先登录 https://ops.planetmeican.com
 2. 然后在任意页面点击"📊 CSV工具"
 3. 上传你的CSV文件
 4. 选择对应的列名开始处理

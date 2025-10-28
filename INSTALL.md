@@ -42,7 +42,7 @@
 ⚠️ **重要：** 在使用工具前，请先完成以下步骤：
 
 1. 打开新标签页
-2. 访问：`https://planet-sf-tools.planetmeican.com`
+2. 访问：`https://ops.planetmeican.com`
 3. 使用你的账号登录
 4. 保持该标签页打开（或确保已登录）
 
@@ -77,7 +77,7 @@ project/
 
 ### 提示"未找到认证token"？
 
-1. 确认已登录 `planet-sf-tools.planetmeican.com`
+1. 确认已登录 `ops.planetmeican.com`
 2. 在同一个浏览器会话中使用工具
 3. 如果清除了Cookie，需要重新登录
 

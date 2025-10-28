@@ -42,7 +42,7 @@
 
             <div id="auth-warning" style="background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 12px;">
                 <strong>⚠️ 使用前提示：</strong><br>
-                请确保在使用本工具前已登录 <a href="https://planet-sf-tools.planetmeican.com" target="_blank">planet-sf-tools.planetmeican.com</a>
+                请确保在使用本工具前已登录 <a href="https://ops.planetmeican.com" target="_blank">ops.planetmeican.com</a>
             </div>
 
             <div id="step1" class="step">
@@ -212,12 +212,12 @@
 
     // API调用函数
     async function searchClient(clientId, isLegacy = true) {
-        const url = 'https://planet-sf-tools.planetmeican.com/napi/v1/developer-team/search-resources';
+        const url = 'https://ops.planetmeican.com/napi/v1/developer-team/search-resources';
         const resourceType = isLegacy ? 'RESOURCE_TYPE_LEGACY_CLIENT' : 'RESOURCE_TYPE_CLIENT';
 
         const token = getAuthToken();
         if (!token) {
-            throw new Error('未找到认证token，请确保已登录 planet-sf-tools.planetmeican.com');
+            throw new Error('未找到认证token，请确保已登录 ops.planetmeican.com');
         }
 
         const response = await fetch(url, {
@@ -323,7 +323,7 @@
             // 检查认证状态
             const token = getAuthToken();
             if (!token) {
-                alert('未找到认证token！\n\n请先打开 https://planet-sf-tools.planetmeican.com 并登录，然后再使用本工具。');
+                alert('未找到认证token！\n\n请先打开 https://ops.planetmeican.com 并登录，然后再使用本工具。');
                 return;
             }
 
