@@ -36,7 +36,12 @@
                 <h3 style="margin: 0; color: #007bff;">CSV客户信息查询工具</h3>
                 <button id="close-panel" style="background: none; border: none; font-size: 20px; cursor: pointer;">&times;</button>
             </div>
-            
+
+            <div id="auth-warning" style="background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 12px;">
+                <strong>⚠️ 使用前提示：</strong><br>
+                请确保在使用本工具前已登录 <a href="https://planet-sf-tools.planetmeican.com" target="_blank">planet-sf-tools.planetmeican.com</a>
+            </div>
+
             <div id="step1" class="step">
                 <h4>步骤1: 上传CSV文件</h4>
                 <input type="file" id="csv-file" accept=".csv" style="margin-bottom: 10px; width: 100%;">
@@ -147,23 +152,43 @@
         return csvContent;
     }
 
+    // 获取认证token
+    function getAuthToken() {
+        const cookies = document.cookie.split(';');
+        for (let cookie of cookies) {
+            const [name, value] = cookie.trim().split('=');
+            if (name === 'token' || name === 'auth_token' || name === 'authorization') {
+                return value;
+            }
+        }
+
+        const localToken = localStorage.getItem('token') || localStorage.getItem('auth_token');
+        if (localToken) {
+            return localToken;
+        }
+
+        return null;
+    }
+
     // API调用函数
     async function searchClient(clientId, isLegacy = true) {
         const url = 'https://planet-sf-tools.planetmeican.com/napi/v1/developer-team/search-resources';
         const resourceType = isLegacy ? 'RESOURCE_TYPE_LEGACY_CLIENT' : 'RESOURCE_TYPE_CLIENT';
-        
+
+        const token = getAuthToken();
+        if (!token) {
+            throw new Error('未找到认证token，请确保已登录 planet-sf-tools.planetmeican.com');
+        }
+
         const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'accept': 'application/json, text/plain, */*',
-                'accept-language': 'zh-CN,zh;q=0.9',
-                'authorization': 'bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjMzNDU5ZjM1NWJmZTNlOGRmZDVmYWFkYzRlOTc0ZDk4MzQ5NDE5YjYifQ.eyJpc3MiOiJodHRwczovL3Nzby5wbGFuZXRtZWljYW4uY29tL2RleCIsInN1YiI6IkNnUXlNVFV3RWdadFpXbGpZVzQiLCJhdWQiOiJwbGFuZXQtYXBpIiwiZXhwIjoxNzYxNjM1OTEwLCJpYXQiOjE3NjE1NDk1MTAsImF0X2hhc2giOiJqb0ZtdkRUbXhrR0VpckJ6MHc4cTN3IiwiZW1haWwiOiJ6aGVuZ2JvX2JqQG1laWNhbi5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwibmFtZSI6IumDkeWNmiJ9.qB8FX8bc_pEGLAcSxJQL7-unUKd4eHS2EX3G6hxF3hIS298EkofvoxMbrdXKaL5seEmTb7ZDZJdE0h8d6DCkyYMckBVNdDszGTkccHSoFM7-EyuwHhe152YrtVny9N7pDtiK8XhwyxMrDsmKeZ8hi7XYz4pDroCSqb2NYOkKsZWv9WYddLj-BnoyLooG808R2CLpAFpSQeLPKxDSgWRgcCoQeI7NhUaYNNEZ90-ZtupAOScsQ0VVes7XwpYJBPo_RrqeSe0BrM8YVH1LLmkQ1_uAODoPg4doIJHbr9IJOhaumN1czQTWqPzylW5-yDm5u5p8lZWzzQ-0Nsc99wYg_Q',
+                'authorization': `bearer ${token}`,
                 'content-type': 'application/json;charset=UTF-8',
-                'origin': 'https://planet-sf-tools.planetmeican.com',
-                'referer': 'https://planet-sf-tools.planetmeican.com/sftools.html',
-                'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
                 'x-platform': 'Planet'
             },
+            credentials: 'include',
             body: JSON.stringify({
                 resourceType: resourceType,
                 pageToken: '',
@@ -239,28 +264,35 @@
         document.getElementById('start-processing').addEventListener('click', async function() {
             const legacyColumn = document.getElementById('legacy-client-column').value;
             const newColumn = document.getElementById('new-client-column').value;
-            
+
             if (!legacyColumn || !newColumn) {
                 alert('请选择3.0和4.0客户ID列名');
                 return;
             }
 
+            // 检查认证状态
+            const token = getAuthToken();
+            if (!token) {
+                alert('未找到认证token！\n\n请先打开 https://planet-sf-tools.planetmeican.com 并登录，然后再使用本工具。');
+                return;
+            }
+
             document.getElementById('step3').style.display = 'block';
             document.getElementById('progress-info').innerHTML = '正在处理数据...';
-            
+
             // 复制数据
             processedData = JSON.parse(JSON.stringify(csvData));
-            
+
             // 添加新列
             processedData.headers.push('3.0客户');
             processedData.headers.push('4.0客户');
-            
+
             const totalRows = processedData.data.length;
             let processedRows = 0;
 
             for (let i = 0; i < processedData.data.length; i++) {
                 const row = processedData.data[i];
-                
+
                 // 查询3.0客户
                 if (row[legacyColumn]) {
                     try {
@@ -273,7 +305,7 @@
                 } else {
                     row['3.0客户'] = '';
                 }
-                
+
                 // 查询4.0客户
                 if (row[newColumn]) {
                     try {
@@ -286,16 +318,16 @@
                 } else {
                     row['4.0客户'] = '';
                 }
-                
+
                 processedRows++;
                 const progress = (processedRows / totalRows) * 100;
                 document.getElementById('progress-bar').style.width = progress + '%';
                 document.getElementById('progress-info').innerHTML = `已处理 ${processedRows}/${totalRows} 行 (${Math.round(progress)}%)`;
-                
+
                 // 添加延迟避免请求过于频繁
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
-            
+
             document.getElementById('progress-info').innerHTML = '处理完成！';
             document.getElementById('download-section').style.display = 'block';
         });
