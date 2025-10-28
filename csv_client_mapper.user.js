@@ -69,8 +69,12 @@
                         </ol>
                     </div>
 
-                    <button id="start-capture" style="width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                    <button id="start-capture" style="width: 100%; padding: 8px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px; margin-bottom: 8px;">
                         🎯 开始捕获请求
+                    </button>
+
+                    <button id="import-curl" style="width: 100%; padding: 8px; background: #17a2b8; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 13px;">
+                        📋 粘贴 cURL 命令
                     </button>
 
                     <div id="capture-status" style="display: none; margin-top: 10px; padding: 10px; background: #fff3cd; border-radius: 5px; text-align: center; font-size: 12px;">
@@ -323,39 +327,276 @@
     }
 
     // 拦截Fetch请求
+    function normalizeHeaders(headers) {
+        if (!headers) return {};
+
+        if (headers instanceof Headers) {
+            const result = {};
+            headers.forEach((value, key) => {
+                result[key] = value;
+            });
+            return result;
+        }
+
+        if (Array.isArray(headers)) {
+            return headers.reduce((acc, [key, value]) => {
+                acc[key] = value;
+                return acc;
+            }, {});
+        }
+
+        return { ...headers };
+    }
+
+    function parseRequestBody(bodyText) {
+        if (!bodyText) return {};
+
+        try {
+            return JSON.parse(bodyText);
+        } catch (error) {
+            console.warn('捕获请求体解析失败，使用原始文本。', error);
+            return { raw: bodyText };
+        }
+    }
+
+    function tokenizeCurlCommand(command) {
+        const tokens = [];
+        let current = '';
+        let inSingleQuote = false;
+        let inDoubleQuote = false;
+        let escaped = false;
+
+        for (let i = 0; i < command.length; i++) {
+            const char = command[i];
+
+            if (escaped) {
+                current += char;
+                escaped = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                escaped = true;
+                continue;
+            }
+
+            if (inSingleQuote) {
+                if (char === "'") {
+                    tokens.push(current);
+                    current = '';
+                    inSingleQuote = false;
+                } else {
+                    current += char;
+                }
+                continue;
+            }
+
+            if (inDoubleQuote) {
+                if (char === '"') {
+                    tokens.push(current);
+                    current = '';
+                    inDoubleQuote = false;
+                } else {
+                    current += char;
+                }
+                continue;
+            }
+
+            if (char === "'") {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                inSingleQuote = true;
+                continue;
+            }
+
+            if (char === '"') {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                inDoubleQuote = true;
+                continue;
+            }
+
+            if (/\s/.test(char)) {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                continue;
+            }
+
+            current += char;
+        }
+
+        if (current) {
+            tokens.push(current);
+        }
+
+        return tokens;
+    }
+
+    function parseCurlCommand(curlCommand) {
+        if (!curlCommand || !curlCommand.trim()) {
+            throw new Error('请输入有效的 cURL 命令');
+        }
+
+        const normalized = curlCommand.replace(/\\\s+/g, ' ').trim();
+        const tokens = tokenizeCurlCommand(normalized);
+
+        if (tokens.length === 0 || tokens[0].toLowerCase() !== 'curl') {
+            throw new Error('命令需要以 curl 开头');
+        }
+
+        let url = '';
+        let method = 'GET';
+        let headers = {};
+        let bodyContent = '';
+
+        for (let i = 1; i < tokens.length; i++) {
+            const token = tokens[i];
+
+            switch (token) {
+                case '-X':
+                case '--request':
+                    method = (tokens[++i] || 'GET').toUpperCase();
+                    break;
+                case '--url':
+                    url = tokens[++i] || url;
+                    break;
+                case '-H':
+                case '--header': {
+                    const headerValue = tokens[++i];
+                    if (headerValue) {
+                        const separatorIndex = headerValue.indexOf(':');
+                        if (separatorIndex !== -1) {
+                            const headerKey = headerValue.slice(0, separatorIndex).trim();
+                            const value = headerValue.slice(separatorIndex + 1).trim();
+                            if (headerKey) {
+                                headers[headerKey] = value;
+                            }
+                        }
+                    }
+                    break;
+                }
+                case '-d':
+                case '--data':
+                case '--data-raw':
+                case '--data-binary':
+                case '--data-ascii':
+                case '--data-urlencode':
+                    bodyContent = tokens[++i] || '';
+                    if (!method || method === 'GET') {
+                        method = 'POST';
+                    }
+                    break;
+                case '--compressed':
+                case '--insecure':
+                    // 忽略这些常见的修饰符
+                    break;
+                default:
+                    if (!token.startsWith('-') && !url) {
+                        url = token;
+                    }
+                    break;
+            }
+        }
+
+        if (!url) {
+            throw new Error('未能在命令中找到 URL');
+        }
+
+        let bodyTemplate = {};
+        const trimmedBody = bodyContent.trim();
+        if (trimmedBody) {
+            if ((trimmedBody.startsWith('{') && trimmedBody.endsWith('}')) ||
+                (trimmedBody.startsWith('[') && trimmedBody.endsWith(']'))) {
+                try {
+                    bodyTemplate = JSON.parse(trimmedBody);
+                } catch (error) {
+                    console.warn('cURL 请求体 JSON 解析失败，保存为原始文本。', error);
+                    bodyTemplate = { raw: trimmedBody };
+                }
+            } else {
+                bodyTemplate = { raw: trimmedBody };
+            }
+        }
+
+        return {
+            version: '2.0',
+            captured_at: new Date().toISOString(),
+            api: {
+                url: url,
+                method: method || 'POST',
+                headers: headers,
+                body_template: bodyTemplate
+            }
+        };
+    }
+
     function setupFetchInterception() {
         window.fetch = async function(...args) {
-            const [url, options] = args;
+            const [input, init] = args;
+            let requestUrl = '';
+            let requestMethod = 'GET';
+            let requestHeaders = {};
+            let requestBodyTemplate = {};
 
-            // 检测是否是目标API
-            if (captureMode && (typeof url === 'string' && url.includes('search-resources'))) {
-                console.log('🎯 捕获到API请求！', url);
+            if (input instanceof Request) {
+                const clonedRequest = input.clone();
+                requestUrl = clonedRequest.url;
+                requestMethod = clonedRequest.method || 'GET';
+                requestHeaders = normalizeHeaders(clonedRequest.headers);
 
-                // 保存配置
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodyText = await clonedRequest.text();
+                    requestBodyTemplate = parseRequestBody(bodyText);
+                }
+            } else {
+                requestUrl = typeof input === 'string' ? input : (input?.url || '');
+                requestMethod = init?.method || 'GET';
+                requestHeaders = normalizeHeaders(init?.headers);
+
+                if (captureMode && requestUrl.includes('search-resources')) {
+                    const bodySource = init?.body;
+                    if (typeof bodySource === 'string') {
+                        requestBodyTemplate = parseRequestBody(bodySource);
+                    } else if (bodySource instanceof Blob) {
+                        const text = await bodySource.text();
+                        requestBodyTemplate = parseRequestBody(text);
+                    }
+                }
+            }
+
+            if (captureMode && requestUrl.includes('search-resources')) {
+                console.log('🎯 捕获到API请求！', requestUrl);
+
                 const config = {
                     version: '2.0',
                     captured_at: new Date().toISOString(),
                     api: {
-                        url: url,
-                        method: options?.method || 'POST',
-                        headers: options?.headers || {},
-                        body_template: options?.body ? JSON.parse(options.body) : {}
+                        url: requestUrl,
+                        method: requestMethod || 'POST',
+                        headers: requestHeaders,
+                        body_template: requestBodyTemplate
                     }
                 };
 
                 saveConfig(config);
                 captureMode = false;
 
-                // 更新UI
-                document.getElementById('capture-status').style.display = 'none';
+                const captureStatus = document.getElementById('capture-status');
+                if (captureStatus) {
+                    captureStatus.style.display = 'none';
+                }
                 updateConfigStatus();
 
-                // 显示成功提示
                 alert('✅ API参数已成功捕获！\n\n现在可以正常使用CSV工具了。');
                 console.log('✅ 配置已保存:', config);
             }
 
-            // 调用原始fetch
             return originalFetch.apply(this, args);
         };
     }
@@ -432,6 +673,25 @@
         // 开始捕获按钮
         document.getElementById('start-capture').addEventListener('click', function() {
             startCaptureMode();
+        });
+
+        document.getElementById('import-curl').addEventListener('click', function() {
+            const curlCommand = prompt('请粘贴完整的 cURL 命令，我们会自动解析并保存配置：');
+            if (!curlCommand) {
+                return;
+            }
+
+            try {
+                const config = parseCurlCommand(curlCommand);
+                saveConfig(config);
+                captureMode = false;
+                updateConfigStatus();
+                alert('✅ 已根据 cURL 命令导入 API 配置！');
+                console.log('✅ 通过 cURL 导入配置:', config);
+            } catch (error) {
+                console.error('cURL 导入失败:', error);
+                alert(`❌ cURL 解析失败：${error.message}`);
+            }
         });
 
         // 重新捕获按钮
