@@ -112,15 +112,15 @@
         document.body.appendChild(button);
     }
 
-    // CSV解析函数
+    // CSV解析函数 - 正确处理CSV格式
     function parseCSV(csvText) {
         const lines = csvText.split('\n');
-        const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+        const headers = parseCSVLine(lines[0]);
         const data = [];
         
         for (let i = 1; i < lines.length; i++) {
             if (lines[i].trim()) {
-                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+                const values = parseCSVLine(lines[i]);
                 const row = {};
                 headers.forEach((header, index) => {
                     row[header] = values[index] || '';
@@ -130,6 +130,43 @@
         }
         
         return { headers, data };
+    }
+
+    // 解析CSV单行，正确处理引号和逗号
+    function parseCSVLine(line) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        let i = 0;
+        
+        while (i < line.length) {
+            const char = line[i];
+            
+            if (char === '"') {
+                if (inQuotes && line[i + 1] === '"') {
+                    // 转义的引号
+                    current += '"';
+                    i += 2;
+                } else {
+                    // 开始或结束引号
+                    inQuotes = !inQuotes;
+                    i++;
+                }
+            } else if (char === ',' && !inQuotes) {
+                // 字段分隔符
+                result.push(current.trim());
+                current = '';
+                i++;
+            } else {
+                current += char;
+                i++;
+            }
+        }
+        
+        // 添加最后一个字段
+        result.push(current.trim());
+        
+        return result;
     }
 
     // 生成CSV内容
